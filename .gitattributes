@@ -1,0 +1,6 @@
+# Keep line endings LF in the repository on every platform.
+# The v1 tree was CRLF on disk vs LF in git, so every file showed as
+# modified on a fresh checkout. This file prevents that recurring.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

@@ -1,0 +1,292 @@
+"""Command-line interface: read-only exports, audit logs, and an offline demo.
+
+Live commands need an Entra app registration. Set these variables
+(``.env`` files are honoured — the CLI loads one from the working
+directory if ``python-dotenv`` is installed):
+
+* ``MS_TENANT_ID``
+* ``MS_CLIENT_ID``
+* ``MS_CLIENT_SECRET``
+
+The CLI never prints a secret or a token. ``check-auth`` prints only
+the token's expiry. Every live command is read-only: there is no CLI
+path to create, update, or delete users, groups, sites, or files.
+Those operations exist in the library for code that needs them, behind
+its own confirmation discipline.
+
+``demo`` needs no credentials and touches no tenant. It writes the
+fictional data from :mod:`m365_graph_toolkit.demo_data` so the export
+and analysis paths can be exercised end to end offline.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+from typing import Any
+
+from . import __version__
+from .analysis import analyze_onedrive_usage, analyze_sign_in_logs, analyze_team_membership
+from .auth import AuthManager
+from .clients import AuditLogsClient, GroupsClient, OneDriveClient, SharePointClient, UsersClient
+from .demo_data import (
+    demo_groups,
+    demo_memberships,
+    demo_onedrive_stats,
+    demo_sign_in_logs,
+    demo_sites,
+    demo_users,
+)
+from .errors import M365Error
+from .exporters import write_csv, write_json
+
+
+def _load_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # pragma: no cover - optional dependency
+        return
+    load_dotenv()
+
+
+def _make_users_client() -> UsersClient:
+    return UsersClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_groups_client() -> GroupsClient:
+    return GroupsClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_sharepoint_client() -> SharePointClient:
+    return SharePointClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_onedrive_client() -> OneDriveClient:
+    return OneDriveClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_audit_client() -> AuditLogsClient:
+    return AuditLogsClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _write_both(rows: list[dict[str, Any]], out_dir: Path, stem: str) -> list[Path]:
+    return [write_csv(rows, out_dir, stem), write_json(rows, out_dir, stem)]
+
+
+async def _export_users(out_dir: Path, *, top: int | None) -> list[Path]:
+    client = _make_users_client()
+    users = await client.get_users(top=top)
+    paths = _write_both(users, out_dir, "users")
+    print(f"Exported {len(users)} users")
+    return paths
+
+
+async def _export_memberships(out_dir: Path) -> list[Path]:
+    client = _make_users_client()
+    users = await client.get_users()
+    memberships = await client.get_user_memberships_batch(users)
+    paths = _write_both(memberships, out_dir, "user_memberships")
+    print(f"Exported {len(memberships)} membership rows for {len(users)} users")
+    return paths
+
+
+async def _export_teams(out_dir: Path) -> list[Path]:
+    client = _make_groups_client()
+    teams = await client.get_teams()
+    members_by_team: dict[str, dict[str, Any]] = {}
+    for team in teams:
+        members = await client.get_team_members(str(team["id"]))
+        members_by_team[str(team["id"])] = {
+            "team_name": team.get("display_name"),
+            "members": members,
+        }
+    analysis = analyze_team_membership(members_by_team)
+    paths = _write_both(teams, out_dir, "teams")
+    paths.append(
+        write_json({"teams": members_by_team, "analysis": analysis}, out_dir, "teams_composition")
+    )
+    print(f"Exported {len(teams)} teams")
+    return paths
+
+
+async def _export_sites(out_dir: Path) -> list[Path]:
+    client = _make_sharepoint_client()
+    sites = await client.get_all_sites()
+    paths = _write_both(sites, out_dir, "sites")
+    print(f"Exported {len(sites)} sites")
+    return paths
+
+
+async def _export_onedrive(out_dir: Path) -> list[Path]:
+    users_client = _make_users_client()
+    onedrive = _make_onedrive_client()
+    users = await users_client.get_users()
+    stats: list[dict[str, Any]] = []
+    for user in users:
+        user_id = str(user["id"])
+        try:
+            client_for_user = onedrive.for_user(user_id)
+            info = await client_for_user.get_drive_info()
+            quota = info.get("quota") or {}
+            counts = await client_for_user.count_items()
+            stats.append(
+                {
+                    "user_id": user_id,
+                    "display_name": user.get("display_name"),
+                    "storage": {
+                        "used_gb": round(float(quota.get("used", 0)) / (1024**3), 2),
+                        "total_gb": round(float(quota.get("total", 0)) / (1024**3), 2),
+                        "remaining_gb": round(float(quota.get("remaining", 0)) / (1024**3), 2),
+                        "state": quota.get("state", ""),
+                    },
+                    "items": counts,
+                }
+            )
+        except Exception as error:  # noqa: BLE001 - per-user error entry, run continues
+            stats.append(
+                {
+                    "user_id": user_id,
+                    "display_name": user.get("display_name"),
+                    "error": str(error),
+                }
+            )
+    analysis = analyze_onedrive_usage(stats)
+    paths = _write_both(stats, out_dir, "onedrive_usage")
+    paths.append(write_json(analysis, out_dir, "onedrive_analysis"))
+    print(f"Exported OneDrive usage for {len(stats)} users")
+    return paths
+
+
+async def _export_sign_in_logs(out_dir: Path, *, days: int, user_id: str | None) -> list[Path]:
+    client = _make_audit_client()
+    logs = await client.get_audit_logs(log_type="signIn", days=days, user_id=user_id)
+    analysis = analyze_sign_in_logs(logs)
+    paths = _write_both(logs, out_dir, "sign_in_logs")
+    paths.append(write_json(analysis, out_dir, "sign_in_analysis"))
+    print(f"Exported {len(logs)} sign-in log entries")
+    return paths
+
+
+def _run_demo(out_dir: Path) -> list[Path]:
+    """Write fictional exports + analyses. No credentials, no network."""
+    users = demo_users()
+    memberships = demo_memberships()
+    sites = demo_sites()
+    groups = demo_groups()
+    onedrive = demo_onedrive_stats()
+    logs = demo_sign_in_logs()
+    members_by_team = {
+        str(group["id"]): {
+            "team_name": group["display_name"],
+            "members": [
+                {"id": row["user_id"]} for row in memberships if row["group_id"] == group["id"]
+            ],
+        }
+        for group in groups
+    }
+    paths: list[Path] = []
+    paths += _write_both(users, out_dir, "users_demo")
+    paths += _write_both(memberships, out_dir, "user_memberships_demo")
+    paths += _write_both(sites, out_dir, "sites_demo")
+    paths.append(write_json(demo_onedrive_stats(), out_dir, "onedrive_usage_demo"))
+    paths.append(write_json(analyze_onedrive_usage(onedrive), out_dir, "onedrive_analysis_demo"))
+    paths += _write_both(logs, out_dir, "sign_in_logs_demo")
+    paths.append(write_json(analyze_sign_in_logs(logs), out_dir, "sign_in_analysis_demo"))
+    paths.append(
+        write_json(
+            {"teams": members_by_team, "analysis": analyze_team_membership(members_by_team)},
+            out_dir,
+            "teams_composition_demo",
+        )
+    )
+    report = out_dir / "DEMO_README.txt"
+    report.write_text(
+        "This output was produced by `m365-toolkit demo` from fictional\n"
+        "data bundled with the package. It is not from a real tenant.\n",
+        encoding="utf-8",
+    )
+    paths.append(report)
+    print(f"Wrote {len(paths)} demo files (fictional data) to {out_dir}")
+    return paths
+
+
+def _check_auth() -> None:
+    auth = AuthManager()
+    token = auth.get_access_token()
+    expires_on = getattr(token, "expires_on", None)
+    print(f"Authentication OK. Token expires_on={expires_on} (token value not shown).")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="m365-toolkit",
+        description="Export and analyse Microsoft 365 data via the Graph API.",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    export = subparsers.add_parser("export", help="Export data to CSV + JSON.")
+    export_sub = export.add_subparsers(dest="export_target", required=True)
+    users_parser = export_sub.add_parser("users", help="Export all users.")
+    users_parser.add_argument("--out", type=Path, required=True)
+    users_parser.add_argument("--top", type=int, default=None, help="Page size (not a total cap).")
+    memberships_parser = export_sub.add_parser("memberships", help="Export user memberships.")
+    memberships_parser.add_argument("--out", type=Path, required=True)
+    teams_parser = export_sub.add_parser("teams", help="Export teams and their composition.")
+    teams_parser.add_argument("--out", type=Path, required=True)
+    sites_parser = export_sub.add_parser("sites", help="Export SharePoint sites.")
+    sites_parser.add_argument("--out", type=Path, required=True)
+    onedrive_parser = export_sub.add_parser("onedrive", help="Export OneDrive usage per user.")
+    onedrive_parser.add_argument("--out", type=Path, required=True)
+
+    logs = subparsers.add_parser("logs", help="Export audit logs.")
+    logs_sub = logs.add_subparsers(dest="logs_target", required=True)
+    sign_ins = logs_sub.add_parser("sign-ins", help="Export sign-in logs.")
+    sign_ins.add_argument("--out", type=Path, required=True)
+    sign_ins.add_argument("--days", type=int, default=7)
+    sign_ins.add_argument("--user", type=str, default=None, help="User id to filter by.")
+
+    demo = subparsers.add_parser("demo", help="Write fictional demo exports (no credentials).")
+    demo.add_argument("--out", type=Path, required=True)
+
+    subparsers.add_parser("check-auth", help="Verify credentials by acquiring a token.")
+    return parser
+
+
+async def _dispatch(args: argparse.Namespace) -> None:
+    if args.command == "export":
+        if args.export_target == "users":
+            await _export_users(args.out, top=args.top)
+        elif args.export_target == "memberships":
+            await _export_memberships(args.out)
+        elif args.export_target == "teams":
+            await _export_teams(args.out)
+        elif args.export_target == "sites":
+            await _export_sites(args.out)
+        elif args.export_target == "onedrive":
+            await _export_onedrive(args.out)
+    elif args.command == "logs" and args.logs_target == "sign-ins":
+        await _export_sign_in_logs(args.out, days=args.days, user_id=args.user)
+    elif args.command == "demo":
+        _run_demo(args.out)
+    elif args.command == "check-auth":
+        _check_auth()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns a process exit code."""
+    _load_dotenv()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        asyncio.run(_dispatch(args))
+    except M365Error as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Exports and local data — never commit real tenant exports
+exports/
+raw/
+*.csv
+*.xlsx
+!.gitkeep
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+.token_cache.json
+token_cache.bin
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
