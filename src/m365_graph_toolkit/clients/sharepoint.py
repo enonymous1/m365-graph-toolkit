@@ -15,15 +15,33 @@ Fixes over v1:
 * ``backup_documents`` still exports document *metadata* only; it
   does not claim to download file contents. Downloading contents
   belongs in :class:`~m365_graph_toolkit.clients.onedrive.OneDriveClient`.
+
+STIG import (folded in from ``mp-m365-app``, 2.1.0): ``create_list``
+and ``import_list_from_csv`` create a list per STIG CSV and import
+its rows, polling until the new columns are provisioned before
+writing any item — the old code polled too, but with a fixed
+``asyncio.sleep(6)`` loop that returned the half-created list as
+success when provisioning never finished. Here unprovisioned
+columns raise instead of writing items against guessed names, and
+per-row failures are counted and reported in the returned summary
+instead of ending the import.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
-from ..errors import ValidationError
+from ..errors import GraphError, ValidationError
 from ..normalize import model_to_dict, require_non_empty
+from ..stig import (
+    discover_csv_files,
+    load_stig_csv,
+    map_row_to_fields,
+    resolve_column_map,
+)
 from .base import BaseClient
 
 SITE_FIELDS = (
@@ -273,6 +291,264 @@ class SharePointClient(BaseClient):
                     }
                 )
         return documents
+
+    # --- Site search and list creation (STIG import) ---------------------
+
+    async def search_sites(
+        self, query: str, *, select: Iterable[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return sites matching ``query``, following pagination.
+
+        Callers pick the site they mean from the results; nothing
+        here assumes the first match is the right one (the old STIG
+        importer did exactly that with a hardcoded ``"STIG"``
+        query).
+        """
+        query = require_non_empty(query, name="query")
+        configuration = self._search_configuration(
+            query=query, select=list(select) if select else list(SITE_FIELDS)
+        )
+
+        async def first_page() -> Any:
+            return await self.client.sites.get(request_configuration=configuration)
+
+        async def next_page(url: str) -> Any:
+            return await self.client.sites.with_url(url).get()
+
+        sites = await self._collect(first_page, next_page, operation_name="search_sites")
+        return [_normalise_site(site) for site in sites]
+
+    def _search_configuration(self, *, query: str, select: list[str]) -> Any:
+        from msgraph.generated.sites.sites_request_builder import SitesRequestBuilder
+
+        query_params = SitesRequestBuilder.SitesRequestBuilderGetQueryParameters(
+            search=query, select=select
+        )
+        return SitesRequestBuilder.SitesRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params
+        )
+
+    def _build_list_model(self, display_name: str, columns: list[dict[str, Any]]) -> Any:
+        """Build an SDK list model with multi-line text columns (live path)."""
+        from msgraph.generated.models.column_definition import ColumnDefinition
+        from msgraph.generated.models.list_ import List_
+        from msgraph.generated.models.list_info import ListInfo
+        from msgraph.generated.models.text_column import TextColumn
+
+        seen: set[str] = set()
+        definitions = []
+        for column in columns:
+            name = str(column.get("name", "")).strip()
+            if not name:
+                raise ValidationError("List column names must not be empty")
+            lowered = name.lower()
+            if lowered in seen:
+                raise ValidationError(f"Duplicate list column name: {name!r}")
+            seen.add(lowered)
+            definitions.append(
+                ColumnDefinition(
+                    name=name,
+                    text=TextColumn(
+                        allow_multiple_lines=bool(column.get("allow_multiple_lines", True))
+                    ),
+                )
+            )
+        return List_(
+            display_name=display_name,
+            columns=definitions,
+            list_=ListInfo(template="genericList"),
+        )
+
+    async def create_list(
+        self, site_id: str, display_name: str, columns: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Create a generic list with the given text columns.
+
+        ``columns`` is a list of ``{"name": ..., "allow_multiple_lines": ...}``
+        mappings. The ``Title`` column is built in by SharePoint and
+        must not be listed here.
+        """
+        site_id = require_non_empty(site_id, name="site_id")
+        display_name = require_non_empty(display_name, name="display_name")
+        if any(str(column.get("name", "")).strip().lower() == "title" for column in columns):
+            raise ValidationError("Do not define a 'Title' column; SharePoint provides it")
+        model = self._build_list_model(display_name, columns)
+        created = await self._run(
+            lambda: self.client.sites.by_site_id(site_id).lists.post(model),
+            operation_name="create_list",
+        )
+        return _normalise_list(created)
+
+    async def get_list_columns(self, site_id: str, list_id: str) -> list[dict[str, Any]]:
+        """Return a list's columns, following pagination."""
+        site_id = require_non_empty(site_id, name="site_id")
+        list_id = require_non_empty(list_id, name="list_id")
+
+        async def first_page() -> Any:
+            return (
+                await self.client.sites.by_site_id(site_id).lists.by_list_id(list_id).columns.get()
+            )
+
+        async def next_page(url: str) -> Any:
+            return (
+                await self.client.sites.by_site_id(site_id)
+                .lists.by_list_id(list_id)
+                .columns.with_url(url)
+                .get()
+            )
+
+        columns = await self._collect(first_page, next_page, operation_name="get_list_columns")
+        return [_normalise_column(column) for column in columns]
+
+    async def import_list_from_csv(
+        self,
+        site_id: str,
+        plan: dict[str, Any],
+        rows: list[dict[str, Any]],
+        *,
+        poll_attempts: int = 7,
+        poll_delay_seconds: float = 6.0,
+        max_failures_reported: int = 20,
+    ) -> dict[str, Any]:
+        """Create a list from a STIG plan and import its rows. Library only.
+
+        The list is created, then its columns are polled until every
+        planned column is provisioned as a text column and the
+        ``Title`` mapping resolves. If provisioning never finishes,
+        :class:`~m365_graph_toolkit.errors.GraphError` is raised and
+        **no items are written** — the created list is left in place
+        and named in the error. Per-row failures are counted, not
+        fatal: the returned summary reports ``items_created``,
+        ``items_failed``, and the first ``max_failures_reported``
+        failures. A plan with no rows raises
+        :class:`~m365_graph_toolkit.errors.ValidationError`.
+        """
+        site_id = require_non_empty(site_id, name="site_id")
+        list_name = str(plan.get("list_name", "")).strip()
+        if not list_name:
+            raise ValidationError("plan must contain a non-empty 'list_name'")
+        if not rows:
+            raise ValidationError(f"Plan for list {list_name!r} has no rows to import")
+        if poll_attempts < 1:
+            raise ValidationError("poll_attempts must be >= 1")
+        if poll_delay_seconds < 0:
+            raise ValidationError("poll_delay_seconds must be >= 0")
+        text_columns = [
+            {"name": str(column["header"]), "allow_multiple_lines": True}
+            for column in plan.get("columns", [])
+            if not column.get("is_title")
+        ]
+        created = await self.create_list(site_id, list_name, text_columns)
+        list_id = str(created.get("id"))
+        if not list_id:
+            raise GraphError(f"Graph created list {list_name!r} without an id")
+        column_map: dict[str, str] | None = None
+        last_error: Exception | None = None
+        for attempt in range(poll_attempts):
+            columns = await self.get_list_columns(site_id, list_id)
+            try:
+                column_map = resolve_column_map(plan, columns)
+                break
+            except ValidationError as error:
+                last_error = error
+                if attempt < poll_attempts - 1:
+                    await asyncio.sleep(poll_delay_seconds)
+        if column_map is None:
+            raise GraphError(
+                f"Columns for list {list_name!r} (id {list_id}) were not provisioned "
+                f"after {poll_attempts} attempts: {last_error}. "
+                "The list was created; no items were written."
+            )
+        created_count = 0
+        failed_count = 0
+        failures: list[dict[str, Any]] = []
+        for index, row in enumerate(rows, start=1):
+            fields = map_row_to_fields(plan, row, column_map)
+            if not fields:
+                failed_count += 1
+                if len(failures) < max_failures_reported:
+                    failures.append(
+                        {"row": index, "error": "Row mapped to no fields", "fields": fields}
+                    )
+                continue
+            try:
+                await self.create_list_item(site_id, list_id, fields)
+                created_count += 1
+            except Exception as error:  # noqa: BLE001 - counted, import continues
+                failed_count += 1
+                self.logger.warning(
+                    "Failed to import row %d into list %s: %s", index, list_name, error
+                )
+                if len(failures) < max_failures_reported:
+                    failures.append({"row": index, "error": str(error), "fields": fields})
+            if index % 500 == 0:
+                self.logger.info("Imported %d/%d rows into list %s", index, len(rows), list_name)
+        return {
+            "list_name": list_name,
+            "list_id": list_id,
+            "source_file": plan.get("source_file"),
+            "rows_total": len(rows),
+            "items_created": created_count,
+            "items_failed": failed_count,
+            "failures": failures,
+        }
+
+    async def import_lists_from_directory(
+        self,
+        site_id: str,
+        directory: str | Path,
+        *,
+        poll_attempts: int = 7,
+        poll_delay_seconds: float = 6.0,
+    ) -> list[dict[str, Any]]:
+        """Import every STIG CSV in ``directory`` into ``site_id``. Library only.
+
+        One CSV's failure does not stop the rest: its summary carries
+        an ``error`` key and zero created items. The caller confirms
+        the site and the directory before calling — there is no CLI
+        path to this method.
+        """
+        site_id = require_non_empty(site_id, name="site_id")
+        summaries: list[dict[str, Any]] = []
+        for csv_file in discover_csv_files(directory):
+            try:
+                plan, rows = load_stig_csv(csv_file)
+                summary = await self.import_list_from_csv(
+                    site_id,
+                    plan,
+                    rows,
+                    poll_attempts=poll_attempts,
+                    poll_delay_seconds=poll_delay_seconds,
+                )
+            except Exception as error:  # noqa: BLE001 - reported per file, batch continues
+                summaries.append(
+                    {
+                        "list_name": csv_file.stem,
+                        "list_id": None,
+                        "source_file": csv_file.name,
+                        "rows_total": 0,
+                        "items_created": 0,
+                        "items_failed": 0,
+                        "failures": [],
+                        "error": str(error),
+                    }
+                )
+                continue
+            summaries.append(summary)
+        return summaries
+
+
+def _normalise_column(column: Any) -> dict[str, Any]:
+    row = model_to_dict(column, ("id", "name", "display_name"))
+    text = column.get("text") if isinstance(column, dict) else getattr(column, "text", None)
+    row["is_text"] = text is not None
+    if isinstance(text, dict):
+        row["allow_multiple_lines"] = text.get(
+            "allowMultipleLines", text.get("allow_multiple_lines")
+        )
+    else:
+        row["allow_multiple_lines"] = getattr(text, "allow_multiple_lines", None)
+    return row
 
 
 __all__ = ["SharePointClient"]

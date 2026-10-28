@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "m365-graph-toolkit"
-version = "2.0.0"
-description = "Export and analyse Microsoft 365 data via the Microsoft Graph API: users, groups, SharePoint, OneDrive, and audit logs."
+version = "2.1.0"
+description = "Export and analyse Microsoft 365 data via the Microsoft Graph API: users, groups, SharePoint, OneDrive, Planner, calendars, mail, Teams messages, audit logs, and STIG list imports."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "enonymous1" }]
-keywords = ["microsoft-graph", "m365", "entra-id", "sharepoint", "onedrive", "audit-logs"]
+keywords = ["microsoft-graph", "m365", "entra-id", "sharepoint", "onedrive", "audit-logs", "planner", "stig"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

@@ -229,10 +229,240 @@ def demo_sign_in_logs() -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "demo_channel_messages",
+    "demo_events",
     "demo_groups",
+    "demo_mail_messages",
     "demo_memberships",
     "demo_onedrive_stats",
+    "demo_planner_tasks",
+    "demo_plans",
     "demo_sign_in_logs",
     "demo_sites",
+    "demo_stig_plan",
     "demo_users",
 ]
+
+
+def demo_plans() -> list[dict[str, Any]]:
+    """Two fictional Planner plans."""
+    return [
+        {
+            "id": "plan-1",
+            "title": "Office Move",
+            "created_date_time": "2024-02-01T09:00:00+00:00",
+            "created_by_user_id": "11111111-1111-1111-1111-111111111111",
+            "container_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "container_type": "group",
+            "container_url": "https://contoso.example/planner/plan-1",
+            "group_name": "Operations",
+        },
+        {
+            "id": "plan-2",
+            "title": "Audit Prep",
+            "created_date_time": "2024-03-01T09:00:00+00:00",
+            "created_by_user_id": "22222222-2222-2222-2222-222222222222",
+            "container_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "container_type": "group",
+            "container_url": "https://contoso.example/planner/plan-2",
+            "group_name": "Operations",
+        },
+    ]
+
+
+def demo_planner_tasks() -> list[dict[str, Any]]:
+    """Two fictional Planner tasks, as ``PlannerClient.get_plan_tasks`` returns them."""
+    return [
+        {
+            "id": "task-1",
+            "title": "Book movers",
+            "bucket_id": "bucket-1",
+            "percent_complete": 50,
+            "priority": 5,
+            "created_date_time": "2024-02-02T09:00:00+00:00",
+            "start_date_time": "2024-02-05T09:00:00+00:00",
+            "due_date_time": "2024-02-20T17:00:00+00:00",
+            "completed_date_time": None,
+            "plan_id": "plan-1",
+            "bucket_name": "To do",
+            "created_by_user_id": "11111111-1111-1111-1111-111111111111",
+            "completed_by_user_id": None,
+            "assigned_to": ["22222222-2222-2222-2222-222222222222"],
+            "labels": ["category1"],
+            "description": "Get three quotes before booking.",
+            "checklist_items": [
+                {"title": "Request quotes", "is_checked": True},
+                {"title": "Compare quotes", "is_checked": False},
+            ],
+            "checklist_total": 2,
+            "checklist_completed": 1,
+        },
+        {
+            "id": "task-2",
+            "title": "Gather evidence",
+            "bucket_id": "bucket-2",
+            "percent_complete": 100,
+            "priority": 3,
+            "created_date_time": "2024-03-02T09:00:00+00:00",
+            "start_date_time": None,
+            "due_date_time": "2024-03-15T17:00:00+00:00",
+            "completed_date_time": "2024-03-14T16:00:00+00:00",
+            "plan_id": "plan-2",
+            "bucket_name": "Done",
+            "created_by_user_id": "22222222-2222-2222-2222-222222222222",
+            "completed_by_user_id": "22222222-2222-2222-2222-222222222222",
+            "assigned_to": [],
+            "labels": [],
+            "description": None,
+            "checklist_items": [],
+            "checklist_total": 0,
+            "checklist_completed": 0,
+        },
+    ]
+
+
+def demo_events() -> list[dict[str, Any]]:
+    """Two fictional calendar events."""
+    return [
+        {
+            "id": "event-1",
+            "subject": "Operations standup",
+            "body_preview": "Daily standup.",
+            "importance": "normal",
+            "is_all_day": False,
+            "is_cancelled": False,
+            "is_online_meeting": True,
+            "online_meeting_url": "https://contoso.example/meet/standup",
+            "created_date_time": "2024-01-10T09:00:00+00:00",
+            "last_modified_date_time": "2024-01-10T09:00:00+00:00",
+            "start_date_time": "2026-10-28T14:00:00",
+            "start_time_zone": "UTC",
+            "end_date_time": "2026-10-28T14:30:00",
+            "end_time_zone": "UTC",
+            "location": "Virtual",
+            "organizer_email": "ada.example@example.com",
+            "attendee_emails": ["ben.example@example.com"],
+        },
+        {
+            "id": "event-2",
+            "subject": "Site visit",
+            "body_preview": "Quarterly site visit.",
+            "importance": "high",
+            "is_all_day": True,
+            "is_cancelled": False,
+            "is_online_meeting": False,
+            "online_meeting_url": None,
+            "created_date_time": "2024-01-11T09:00:00+00:00",
+            "last_modified_date_time": "2024-01-11T09:00:00+00:00",
+            "start_date_time": "2026-10-29T00:00:00",
+            "start_time_zone": "UTC",
+            "end_date_time": "2026-10-29T23:59:00",
+            "end_time_zone": "UTC",
+            "location": "Building A",
+            "organizer_email": "ben.example@example.com",
+            "attendee_emails": [],
+        },
+    ]
+
+
+def demo_mail_messages() -> list[dict[str, Any]]:
+    """Two fictional Outlook messages."""
+    return [
+        {
+            "id": "mail-1",
+            "subject": "Q3 numbers",
+            "body_preview": "Attached are the Q3 numbers.",
+            "importance": "normal",
+            "is_read": True,
+            "has_attachments": True,
+            "received_date_time": "2026-10-20T09:00:00+00:00",
+            "sent_date_time": "2026-10-20T08:55:00+00:00",
+            "created_date_time": "2026-10-20T09:00:00+00:00",
+            "from_email": "ada.example@example.com",
+            "from_name": "Ada Example",
+            "to_emails": ["ben.example@example.com"],
+            "cc_emails": [],
+            "bcc_emails": [],
+            "body": "<p>Attached are the Q3 numbers.</p>",
+            "body_content_type": "html",
+        },
+        {
+            "id": "mail-2",
+            "subject": "Welcome",
+            "body_preview": "Welcome to the team.",
+            "importance": "low",
+            "is_read": False,
+            "has_attachments": False,
+            "received_date_time": "2026-10-21T09:00:00+00:00",
+            "sent_date_time": "2026-10-21T08:00:00+00:00",
+            "created_date_time": "2026-10-21T09:00:00+00:00",
+            "from_email": "ben.example@example.com",
+            "from_name": "Ben Example",
+            "to_emails": ["ada.example@example.com"],
+            "cc_emails": ["guest@example.org"],
+            "bcc_emails": [],
+            "body": "Welcome to the team.",
+            "body_content_type": "text",
+        },
+    ]
+
+
+def demo_channel_messages() -> list[dict[str, Any]]:
+    """Two fictional Teams channel messages."""
+    return [
+        {
+            "id": "chat-1",
+            "subject": None,
+            "importance": "normal",
+            "message_type": "message",
+            "created_date_time": "2026-10-20T09:00:00+00:00",
+            "last_modified_date_time": "2026-10-20T09:00:00+00:00",
+            "deleted_date_time": None,
+            "body": "<p>Standup notes are posted.</p>",
+            "body_content_type": "html",
+            "sender_type": "user",
+            "sender_id": "11111111-1111-1111-1111-111111111111",
+            "sender_display_name": "Ada Example",
+            "reply_count": 1,
+            "reaction_count": 1,
+            "reaction_types": ["like"],
+            "team_id": "team-1",
+            "channel_id": "channel-1",
+        },
+        {
+            "id": "chat-2",
+            "subject": None,
+            "importance": "normal",
+            "message_type": "message",
+            "created_date_time": "2026-10-20T09:10:00+00:00",
+            "last_modified_date_time": "2026-10-20T09:10:00+00:00",
+            "deleted_date_time": None,
+            "body": "Thanks!",
+            "body_content_type": "text",
+            "sender_type": "user",
+            "sender_id": "22222222-2222-2222-2222-222222222222",
+            "sender_display_name": "Ben Example",
+            "reply_count": 0,
+            "reaction_count": 0,
+            "reaction_types": [],
+            "team_id": "team-1",
+            "channel_id": "channel-1",
+        },
+    ]
+
+
+def demo_stig_plan() -> dict[str, Any]:
+    """A fictional STIG list plan, in the shape ``stig.plan_lists_from_directory`` returns."""
+    return {
+        "list_name": "Fictional Example STIG",
+        "source_file": "Fictional Example STIG.csv",
+        "row_count": 2,
+        "title_header": "Vuln ID",
+        "columns": [
+            {"header": "Vuln ID", "is_title": True},
+            {"header": "Severity", "is_title": False},
+            {"header": "Rule Title", "is_title": False},
+            {"header": "Fix Text", "is_title": False},
+        ],
+        "skipped_headers": ["_UIVersionString"],
+    }

@@ -1,0 +1,3 @@
+STIG,Benchmark ID,Release Info,Version,Vuln ID,Severity,Rule ID,STIG ID,Classification,Rule Title,Fix Text,Discussion,_UIVersionString
+Fictional Example STIG,,Release: 1 Benchmark Date: 01 Jan 2026,1,V-999001,medium,SV-999001r1,EX-00-000001,Unclassified,Example systems must use fictional setting A.,Set the fictional setting to A.,This is fictional example data for preview testing only.,1
+Fictional Example STIG,,Release: 1 Benchmark Date: 01 Jan 2026,1,V-999002,low,SV-999002r1,EX-00-000002,Unclassified,Example systems must use fictional setting B.,Set the fictional setting to B.,This is fictional example data for preview testing only.,1

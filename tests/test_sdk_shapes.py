@@ -120,3 +120,83 @@ def test_model_construction() -> None:
     body = CreateLinkPostRequestBody(type="view", scope="anonymous")
     assert body.type == "view"
     assert body.scope == "anonymous"
+
+
+def test_planner_calendar_mail_builder_chains(graph_client) -> None:
+    user = graph_client.users.by_user_id("u1")
+    assert hasattr(user.planner.tasks, "get")
+    assert hasattr(user.planner.tasks, "with_url")
+    assert hasattr(user.calendar.events, "get")
+    assert hasattr(user.calendar.events, "with_url")
+    assert hasattr(user.messages, "get")
+    assert hasattr(user.messages, "with_url")
+    group_plans = graph_client.groups.by_group_id("g1").planner.plans
+    assert hasattr(group_plans, "get")
+    assert hasattr(group_plans, "with_url")
+    plan = graph_client.planner.plans.by_planner_plan_id("p1")
+    assert hasattr(plan.tasks, "get")
+    assert hasattr(plan.tasks, "with_url")
+    assert hasattr(plan.buckets, "get")
+    assert hasattr(plan.buckets, "with_url")
+
+
+def test_teams_channel_message_builder_chains(graph_client) -> None:
+    assert hasattr(graph_client.teams, "get")
+    assert hasattr(graph_client.teams, "with_url")
+    team = graph_client.teams.by_team_id("team1")
+    assert hasattr(team.channels, "get")
+    assert hasattr(team.channels, "with_url")
+    channel = team.channels.by_channel_id("ch1")
+    assert hasattr(channel.messages, "get")
+    assert hasattr(channel.messages, "with_url")
+
+
+def test_list_create_and_column_builder_chains(graph_client) -> None:
+    site = graph_client.sites.by_site_id("s1")
+    assert hasattr(site.lists, "post")
+    columns = site.lists.by_list_id("l1").columns
+    assert hasattr(columns, "get")
+    assert hasattr(columns, "with_url")
+    assert hasattr(graph_client.sites, "get")
+    # Search query parameter on the sites builder.
+    from msgraph.generated.sites.sites_request_builder import SitesRequestBuilder
+
+    params = SitesRequestBuilder.SitesRequestBuilderGetQueryParameters(search="STIG", select=["id"])
+    assert params.search == "STIG"
+
+
+def test_planner_calendar_mail_models() -> None:
+    from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+    from msgraph.generated.models.email_address import EmailAddress
+    from msgraph.generated.models.event import Event
+    from msgraph.generated.models.identity import Identity
+    from msgraph.generated.models.identity_set import IdentitySet
+    from msgraph.generated.models.item_body import ItemBody
+    from msgraph.generated.models.message import Message
+    from msgraph.generated.models.planner_plan_container import PlannerPlanContainer
+    from msgraph.generated.models.planner_task import PlannerTask
+    from msgraph.generated.models.planner_task_details import PlannerTaskDetails
+    from msgraph.generated.models.recipient import Recipient
+
+    task = PlannerTask(
+        title="T",
+        percent_complete=50,
+        created_by=IdentitySet(user=Identity(id="u1", display_name="Ada")),
+    )
+    assert task.created_by.user.id == "u1"
+    details = PlannerTaskDetails(description="desc")
+    assert details.description == "desc"
+    event = Event(
+        subject="S",
+        start=DateTimeTimeZone(date_time="2026-01-01T09:00:00", time_zone="UTC"),
+    )
+    assert event.start.date_time == "2026-01-01T09:00:00"
+    message = Message(
+        subject="Hi",
+        from_=Recipient(email_address=EmailAddress(address="s@example.com")),
+        body=ItemBody(content="hi", content_type="text"),
+    )
+    assert message.from_.email_address.address == "s@example.com"
+    assert message.body.content == "hi"
+    container = PlannerPlanContainer(container_id="g1", type="group")
+    assert container.container_id == "g1"

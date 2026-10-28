@@ -1,4 +1,4 @@
-"""Command-line interface: read-only exports, audit logs, and an offline demo.
+"""Command-line interface: read-only exports, audit logs, STIG preview, demo.
 
 Live commands need an Entra app registration. Set these variables
 (``.env`` files are honoured — the CLI loads one from the working
@@ -10,9 +10,11 @@ directory if ``python-dotenv`` is installed):
 
 The CLI never prints a secret or a token. ``check-auth`` prints only
 the token's expiry. Every live command is read-only: there is no CLI
-path to create, update, or delete users, groups, sites, or files.
-Those operations exist in the library for code that needs them, behind
-its own confirmation discipline.
+path to create, update, or delete users, groups, sites, files,
+plans, or lists. Those operations exist in the library for code
+that needs them, behind its own confirmation discipline. ``stig
+preview`` reads local CSV files only and needs no credentials; the
+STIG import itself is library-only (see ``examples/stig_import.py``).
 
 ``demo`` needs no credentials and touches no tenant. It writes the
 fictional data from :mod:`m365_graph_toolkit.demo_data` so the export
@@ -30,17 +32,98 @@ from typing import Any
 from . import __version__
 from .analysis import analyze_onedrive_usage, analyze_sign_in_logs, analyze_team_membership
 from .auth import AuthManager
-from .clients import AuditLogsClient, GroupsClient, OneDriveClient, SharePointClient, UsersClient
+from .clients import (
+    AuditLogsClient,
+    CalendarClient,
+    GroupsClient,
+    MailClient,
+    OneDriveClient,
+    PlannerClient,
+    SharePointClient,
+    TeamsMessagesClient,
+    UsersClient,
+)
+from .clients.calendar import EVENT_FIELDS
+from .clients.mail import MESSAGE_FIELDS
+from .clients.planner import PLAN_FIELDS, TASK_FIELDS
 from .demo_data import (
+    demo_channel_messages,
+    demo_events,
     demo_groups,
+    demo_mail_messages,
     demo_memberships,
     demo_onedrive_stats,
+    demo_planner_tasks,
+    demo_plans,
     demo_sign_in_logs,
     demo_sites,
+    demo_stig_plan,
     demo_users,
 )
 from .errors import M365Error
 from .exporters import write_csv, write_json
+from .stig import plan_lists_from_directory
+
+_PLAN_EXPORT_FIELDS = [
+    *PLAN_FIELDS,
+    "created_by_user_id",
+    "container_id",
+    "container_type",
+    "container_url",
+    "group_name",
+]
+_TASK_EXPORT_FIELDS = [
+    *TASK_FIELDS,
+    "plan_id",
+    "bucket_name",
+    "created_by_user_id",
+    "completed_by_user_id",
+    "assigned_to",
+    "labels",
+    "description",
+    "checklist_items",
+    "checklist_total",
+    "checklist_completed",
+]
+_EVENT_EXPORT_FIELDS = [
+    *EVENT_FIELDS,
+    "start_date_time",
+    "start_time_zone",
+    "end_date_time",
+    "end_time_zone",
+    "location",
+    "organizer_email",
+    "attendee_emails",
+]
+_MAIL_EXPORT_FIELDS = [
+    *MESSAGE_FIELDS,
+    "from_email",
+    "from_name",
+    "to_emails",
+    "cc_emails",
+    "bcc_emails",
+    "body",
+    "body_content_type",
+]
+_CHANNEL_MESSAGE_EXPORT_FIELDS = [
+    "id",
+    "subject",
+    "importance",
+    "message_type",
+    "created_date_time",
+    "last_modified_date_time",
+    "deleted_date_time",
+    "body",
+    "body_content_type",
+    "sender_type",
+    "sender_id",
+    "sender_display_name",
+    "reply_count",
+    "reaction_count",
+    "reaction_types",
+    "team_id",
+    "channel_id",
+]
 
 
 def _load_dotenv() -> None:
@@ -71,8 +154,33 @@ def _make_audit_client() -> AuditLogsClient:
     return AuditLogsClient.from_auth(AuthManager())  # type: ignore[return-value]
 
 
+def _make_planner_client() -> PlannerClient:
+    return PlannerClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_calendar_client() -> CalendarClient:
+    return CalendarClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_mail_client() -> MailClient:
+    return MailClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_teams_messages_client() -> TeamsMessagesClient:
+    return TeamsMessagesClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
 def _write_both(rows: list[dict[str, Any]], out_dir: Path, stem: str) -> list[Path]:
     return [write_csv(rows, out_dir, stem), write_json(rows, out_dir, stem)]
+
+
+def _write_rows(
+    rows: list[dict[str, Any]], out_dir: Path, stem: str, *, fieldnames: list[str]
+) -> list[Path]:
+    """Write CSV + JSON, including a header-only CSV for an empty result."""
+    if rows:
+        return _write_both(rows, out_dir, stem)
+    return [write_csv(rows, out_dir, stem, fieldnames=fieldnames), write_json(rows, out_dir, stem)]
 
 
 async def _export_users(out_dir: Path, *, top: int | None) -> list[Path]:
@@ -169,6 +277,66 @@ async def _export_sign_in_logs(out_dir: Path, *, days: int, user_id: str | None)
     return paths
 
 
+async def _export_planner(out_dir: Path) -> list[Path]:
+    groups_client = _make_groups_client()
+    planner = _make_planner_client()
+    groups = await groups_client.get_groups()
+    plans = await planner.get_all_plans(groups)
+    tasks: list[dict[str, Any]] = []
+    for plan in plans:
+        tasks.extend(await planner.get_plan_tasks(str(plan["id"])))
+    paths = _write_rows(plans, out_dir, "planner_plans", fieldnames=_PLAN_EXPORT_FIELDS)
+    paths += _write_rows(tasks, out_dir, "planner_tasks", fieldnames=_TASK_EXPORT_FIELDS)
+    print(f"Exported {len(plans)} plans and {len(tasks)} tasks")
+    return paths
+
+
+async def _export_calendar_events(out_dir: Path, *, user_id: str) -> list[Path]:
+    client = _make_calendar_client()
+    events = await client.get_user_events(user_id)
+    paths = _write_rows(events, out_dir, "calendar_events", fieldnames=_EVENT_EXPORT_FIELDS)
+    print(f"Exported {len(events)} calendar events for {user_id}")
+    return paths
+
+
+async def _export_mail(out_dir: Path, *, user_id: str) -> list[Path]:
+    client = _make_mail_client()
+    messages = await client.get_user_messages(user_id)
+    paths = _write_rows(messages, out_dir, "mail", fieldnames=_MAIL_EXPORT_FIELDS)
+    print(f"Exported {len(messages)} messages for {user_id}")
+    return paths
+
+
+async def _export_channel_messages(out_dir: Path, *, team_id: str, channel_id: str) -> list[Path]:
+    client = _make_teams_messages_client()
+    messages = await client.get_channel_messages(team_id, channel_id)
+    paths = _write_rows(
+        messages, out_dir, "channel_messages", fieldnames=_CHANNEL_MESSAGE_EXPORT_FIELDS
+    )
+    print(f"Exported {len(messages)} channel messages for {channel_id}")
+    return paths
+
+
+def _run_stig_preview(directory: Path, out_dir: Path | None) -> list[Path]:
+    """Plan SharePoint lists for local STIG CSVs. No credentials, no writes to a tenant."""
+    plans = plan_lists_from_directory(directory)
+    for plan in plans:
+        print(
+            f"{plan['list_name']}: {plan['row_count']} rows, "
+            f"{len(plan['columns'])} columns"
+            + (
+                f" (skipped: {', '.join(plan['skipped_headers'])})"
+                if plan["skipped_headers"]
+                else ""
+            )
+        )
+    if out_dir is None:
+        return []
+    path = write_json(plans, out_dir, "stig_preview")
+    print(f"Wrote preview for {len(plans)} lists to {path}")
+    return [path]
+
+
 def _run_demo(out_dir: Path) -> list[Path]:
     """Write fictional exports + analyses. No credentials, no network."""
     users = demo_users()
@@ -190,6 +358,12 @@ def _run_demo(out_dir: Path) -> list[Path]:
     paths += _write_both(users, out_dir, "users_demo")
     paths += _write_both(memberships, out_dir, "user_memberships_demo")
     paths += _write_both(sites, out_dir, "sites_demo")
+    paths += _write_both(demo_plans(), out_dir, "planner_plans_demo")
+    paths += _write_both(demo_planner_tasks(), out_dir, "planner_tasks_demo")
+    paths += _write_both(demo_events(), out_dir, "calendar_events_demo")
+    paths += _write_both(demo_mail_messages(), out_dir, "mail_demo")
+    paths += _write_both(demo_channel_messages(), out_dir, "channel_messages_demo")
+    paths.append(write_json([demo_stig_plan()], out_dir, "stig_preview_demo"))
     paths.append(write_json(demo_onedrive_stats(), out_dir, "onedrive_usage_demo"))
     paths.append(write_json(analyze_onedrive_usage(onedrive), out_dir, "onedrive_analysis_demo"))
     paths += _write_both(logs, out_dir, "sign_in_logs_demo")
@@ -240,6 +414,22 @@ def build_parser() -> argparse.ArgumentParser:
     sites_parser.add_argument("--out", type=Path, required=True)
     onedrive_parser = export_sub.add_parser("onedrive", help="Export OneDrive usage per user.")
     onedrive_parser.add_argument("--out", type=Path, required=True)
+    planner_parser = export_sub.add_parser("planner", help="Export Planner plans and their tasks.")
+    planner_parser.add_argument("--out", type=Path, required=True)
+    calendar_parser = export_sub.add_parser(
+        "calendar-events", help="Export one user's calendar events."
+    )
+    calendar_parser.add_argument("--out", type=Path, required=True)
+    calendar_parser.add_argument("--user", required=True, help="User id or UPN.")
+    mail_parser = export_sub.add_parser("mail", help="Export one user's Outlook messages.")
+    mail_parser.add_argument("--out", type=Path, required=True)
+    mail_parser.add_argument("--user", required=True, help="User id or UPN.")
+    channel_parser = export_sub.add_parser(
+        "channel-messages", help="Export one Teams channel's messages."
+    )
+    channel_parser.add_argument("--out", type=Path, required=True)
+    channel_parser.add_argument("--team", required=True, help="Team id.")
+    channel_parser.add_argument("--channel", required=True, help="Channel id.")
 
     logs = subparsers.add_parser("logs", help="Export audit logs.")
     logs_sub = logs.add_subparsers(dest="logs_target", required=True)
@@ -250,6 +440,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = subparsers.add_parser("demo", help="Write fictional demo exports (no credentials).")
     demo.add_argument("--out", type=Path, required=True)
+
+    stig = subparsers.add_parser(
+        "stig", help="Plan SharePoint lists from local STIG CSVs (no tenant writes)."
+    )
+    stig_sub = stig.add_subparsers(dest="stig_target", required=True)
+    preview = stig_sub.add_parser(
+        "preview", help="Show the lists that would be created from a CSV directory."
+    )
+    preview.add_argument("--dir", type=Path, required=True, help="Directory of STIG CSVs.")
+    preview.add_argument("--out", type=Path, default=None, help="Write the preview JSON here.")
 
     subparsers.add_parser("check-auth", help="Verify credentials by acquiring a token.")
     return parser
@@ -267,8 +467,18 @@ async def _dispatch(args: argparse.Namespace) -> None:
             await _export_sites(args.out)
         elif args.export_target == "onedrive":
             await _export_onedrive(args.out)
+        elif args.export_target == "planner":
+            await _export_planner(args.out)
+        elif args.export_target == "calendar-events":
+            await _export_calendar_events(args.out, user_id=args.user)
+        elif args.export_target == "mail":
+            await _export_mail(args.out, user_id=args.user)
+        elif args.export_target == "channel-messages":
+            await _export_channel_messages(args.out, team_id=args.team, channel_id=args.channel)
     elif args.command == "logs" and args.logs_target == "sign-ins":
         await _export_sign_in_logs(args.out, days=args.days, user_id=args.user)
+    elif args.command == "stig" and args.stig_target == "preview":
+        _run_stig_preview(args.dir, args.out)
     elif args.command == "demo":
         _run_demo(args.out)
     elif args.command == "check-auth":

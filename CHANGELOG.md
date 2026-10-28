@@ -3,6 +3,83 @@
 All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] — 2026-10-28
+
+Fold-in of the February/May 2026 `mp-m365-app` codebase's parts that
+2.0.0 did not already cover. The overlapping Graph exporters
+(users, groups, SharePoint sites, OneDrive) were **not** carried
+over — 2.0.0 already covers them. No original history, paths, or
+tenant data were carried over, and the 46 MB of STIG CSVs in the old
+tree were not bundled; see "STIG" below.
+
+### Added
+
+- `PlannerClient`: per-user tasks, plans per group, plan tasks with
+  details and bucket names resolved, and bounded-concurrency batch
+  fetches (`get_tasks_for_users`, `get_all_plans`). CLI:
+  `export planner`.
+- `CalendarClient`: one user's calendar events, paged, with
+  start/end, organiser, attendees, and location flattened. CLI:
+  `export calendar-events --user <id>`.
+- `MailClient`: one user's Outlook messages, paged, with sender
+  and recipient addresses and body content resolved. CLI:
+  `export mail --user <id>`.
+- `TeamsMessagesClient`: teams, channels, and channel messages via
+  the `/teams` endpoint, with sender identity and reaction counts
+  resolved. CLI: `export channel-messages --team <id> --channel <id>`.
+- STIG planning module (`m365_graph_toolkit.stig`, pure, no Graph
+  dependency): `Vuln ID` -> `Title` mapping, read-only-field
+  skipping, duplicate-header and empty-CSV rejection, and column
+  resolution against provisioned SharePoint columns. CLI:
+  `stig preview --dir <csv-directory>` (local only, no credentials).
+- `SharePointClient` STIG writes (library only): `search_sites`,
+  `create_list`, `get_list_columns`, `import_list_from_csv`, and
+  `import_lists_from_directory`, with column-provisioning polling
+  before any item is written and per-row failure counts in the
+  returned summary. Example: `examples/stig_import.py` (typed-YES
+  confirmation). Fictional sample: `examples/Fictional Example STIG.csv`.
+- Offline `demo` output extended with Planner, calendar, mail,
+  channel-message, and STIG-preview files over fictional data.
+
+### Fixed (verified against the `mp-m365-app` tree)
+
+- 41 hardcoded home-directory paths are gone. Export and
+  log locations are caller-chosen; `EXPORT_BASE_PATH` in the old
+  README was never read in code and is not revived.
+- Unpinned `requirements.txt` that listed `msgraph-core` but not
+  the `msgraph-sdk` / `kiota-abstractions` the code imported is
+  replaced by the `[graph]` extra, as in 2.0.0.
+- Missing `__init__.py` files and per-module `sys.path.append` /
+  `load_dotenv()` hacks are gone; clients take a built Graph
+  client (see `clients/base.py`).
+- First-page-only fetches (user Planner tasks, groups list for
+  plans) now page through `odata_next_link`; retry is the shared
+  bounded retry (429/502/503/504 only), not a loop that retried
+  403s.
+- Unbounded `asyncio.gather()` per-user fetches are bounded with a
+  semaphore and log-and-continue per user instead of aborting the
+  run on the first failure.
+- Copy-pasted CSV helpers in seven utils modules are gone; rows
+  go through the non-destructive exporters.
+- The Django 3.2 stub (placeholder secret key, `DEBUG=True`, a
+  view returning dummy data, a `wsgi.py` that did not exist) is
+  not carried over. This package has no web UI.
+- The STIG importer's "first site match wins" behaviour is gone:
+  `search_sites` returns every match and the caller picks. Its
+  fixed 6-second polling that returned a half-created list as
+  success now raises if columns never provision, before writing
+  items.
+- `TeamsMessageExporter`'s swallow-every-error-and-return-`[]`
+  behaviour is gone; Graph errors surface through the client.
+
+### Not verified
+
+- No live Graph run for the 2.1.0 additions (see README, "Live
+  check"). SDK builder chains and model shapes for Planner,
+  calendar, mail, Teams messages, and list creation were checked
+  against the installed `msgraph-sdk` 1.65.0 source; every offline
+  behaviour is tested with fake clients.
+
 ## [2.0.0] — 2026-10-27
 
 A rewrite of the July 2026 `mp-user-project` codebase as a single,

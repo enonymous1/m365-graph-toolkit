@@ -19,6 +19,8 @@ raw/
 *.csv
 *.xlsx
 !.gitkeep
+# Exception: the fictional STIG-shaped sample for offline preview tests.
+!examples/Fictional Example STIG.csv
 
 # Secrets and local config
 .env
