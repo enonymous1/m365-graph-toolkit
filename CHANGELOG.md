@@ -3,6 +3,73 @@
 All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] — 2026-10-28
+
+Fold-in of the Google Sheets sink from the October 2025 / May 2026
+`mp-m365-py` codebase (`m365-google-sheets-sync`). That tree's other
+half — a hand-rolled aiohttp Graph client fetching users and mailbox
+messages — was **not** carried over: users are already covered by
+`UsersClient` and mailbox messages by the 2.1.0 `MailClient` (paged,
+via the SDK). No original history, paths, or tenant data were carried
+over.
+
+### Added
+
+- `SheetsExporter` (`m365_graph_toolkit.sheets`, optional extra
+  `[sheets]`): write toolkit rows into a Google Sheets worksheet
+  with a Google service account. The key is a JSON object string, a
+  mapping, or a path to a JSON key file; the spreadsheet is opened
+  lazily on the first write and the worksheet is created if missing.
+  CLI: `m365-toolkit sync users` and `m365-toolkit sync mail --user
+  <id>`, each with `--spreadsheet`, `--service-account`,
+  `--worksheet`, and `--dry-run`. Configuration falls back to
+  `GCS_SERVICE_ACCOUNT_KEY_JSON` / `TARGET_GOOGLE_SHEET_ID`, the
+  original project's variable names. Example:
+  `examples/sync_to_sheets.py`.
+- The Sheets writer clears the target worksheet first (a replace,
+  as in the original), writes in 1,000-row chunks, and sanitises
+  worksheet titles (forbidden characters replaced, 100-character
+  cap). Values follow the CSV exporter: `None` becomes `""`,
+  datetimes become ISO strings, lists/dicts become JSON strings,
+  numbers and booleans keep their types. No `pandas` dependency.
+
+### Fixed (verified against the `mp-m365-py` tree)
+
+- `--dry-run` in the old CLI still authenticated to Google Sheets
+  before fetching, and a failed Sheets login leaked the Graph
+  session. Here the exporter is built only after a successful Graph
+  fetch and only for a real sync; a dry run needs no Google
+  credentials at all.
+- Missing Sheets configuration and unknown sync types in the old
+  CLI logged an error and exited successfully. Here a missing
+  `--spreadsheet` / `--service-account` (or env fallback) is a
+  validation error and the CLI returns 1, before any Graph fetch.
+- The old writer retried *every* Sheets exception including auth
+  failures. Retry here covers only 429 / 502 / 503 / 504 (honouring
+  `Retry-After`), the same predicate as the Graph clients.
+- The old CLI's mailbox fetch returned only the first page (top 25).
+  `sync mail` uses `MailClient`, which pages through
+  `odata_next_link`.
+- The old workflow ran the live sync on every push to `main` from
+  paths that only exist in a subfolder, so it could never have run
+  as written — and would have overwritten the live spreadsheet on
+  every push if it had. No live-sync workflow is shipped: the README
+  documents a `workflow_dispatch`-only schedule instead.
+- `python main.py` in the old tree failed without
+  `PYTHONPATH=src`. The sync commands are part of the installable
+  `m365-toolkit` CLI; there is no separate entry point.
+
+### Not verified
+
+- No live Google Sheets run (no service-account credentials on the
+  build machine). The `gspread` 6.2 call shapes used
+  (`Worksheet.update(values, range_name=...)`,
+  `Spreadsheet.add_worksheet(title, rows, cols)`,
+  `WorksheetNotFound`) were checked against the installed package
+  and are asserted by a shape test; a real sync against a test
+  spreadsheet still needs the maintainer's credentials. See README,
+  "Live check".
+
 ## [2.1.0] — 2026-10-28
 
 Fold-in of the February/May 2026 `mp-m365-app` codebase's parts that

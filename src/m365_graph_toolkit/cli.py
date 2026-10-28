@@ -9,12 +9,16 @@ directory if ``python-dotenv`` is installed):
 * ``MS_CLIENT_SECRET``
 
 The CLI never prints a secret or a token. ``check-auth`` prints only
-the token's expiry. Every live command is read-only: there is no CLI
-path to create, update, or delete users, groups, sites, files,
-plans, or lists. Those operations exist in the library for code
-that needs them, behind its own confirmation discipline. ``stig
-preview`` reads local CSV files only and needs no credentials; the
-STIG import itself is library-only (see ``examples/stig_import.py``).
+the token's expiry. Every live command is read-only except ``sync``,
+which writes to Google Sheets and **clears the target worksheet
+first** — treat that worksheet as owned by the sync, and try
+``--dry-run`` (which fetches from Graph but never touches Sheets)
+before a first real sync. There is no CLI path to create, update, or
+delete users, groups, sites, files, plans, or lists. Those
+operations exist in the library for code that needs them, behind its
+own confirmation discipline. ``stig preview`` reads local CSV files
+only and needs no credentials; the STIG import itself is library-only
+(see ``examples/stig_import.py``).
 
 ``demo`` needs no credentials and touches no tenant. It writes the
 fictional data from :mod:`m365_graph_toolkit.demo_data` so the export
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -46,6 +51,7 @@ from .clients import (
 from .clients.calendar import EVENT_FIELDS
 from .clients.mail import MESSAGE_FIELDS
 from .clients.planner import PLAN_FIELDS, TASK_FIELDS
+from .clients.users import USER_FIELDS
 from .demo_data import (
     demo_channel_messages,
     demo_events,
@@ -60,8 +66,9 @@ from .demo_data import (
     demo_stig_plan,
     demo_users,
 )
-from .errors import M365Error
+from .errors import M365Error, ValidationError
 from .exporters import write_csv, write_json
+from .sheets import SheetsExporter, sanitize_worksheet_title
 from .stig import plan_lists_from_directory
 
 _PLAN_EXPORT_FIELDS = [
@@ -168,6 +175,41 @@ def _make_mail_client() -> MailClient:
 
 def _make_teams_messages_client() -> TeamsMessagesClient:
     return TeamsMessagesClient.from_auth(AuthManager())  # type: ignore[return-value]
+
+
+def _make_sheets_exporter(
+    service_account_key_json_or_path: str, spreadsheet_id: str
+) -> SheetsExporter:
+    return SheetsExporter(service_account_key_json_or_path, spreadsheet_id)
+
+
+def _resolve_sheets_config(args: argparse.Namespace) -> tuple[str, str]:
+    """Sheets credentials for a real (non-dry-run) sync.
+
+    CLI flags win over the environment. The original project's
+    variable names are kept: ``GCS_SERVICE_ACCOUNT_KEY_JSON`` (a JSON
+    string or a path to the key file) and ``TARGET_GOOGLE_SHEET_ID``.
+    A missing value is an error that exits non-zero — the old CLI
+    logged it and exited successfully, so a misconfigured scheduled
+    run looked green.
+    """
+    service_account = args.service_account or os.environ.get("GCS_SERVICE_ACCOUNT_KEY_JSON", "")
+    spreadsheet_id = args.spreadsheet or os.environ.get("TARGET_GOOGLE_SHEET_ID", "")
+    missing = [
+        name
+        for name, value in (
+            ("GCS_SERVICE_ACCOUNT_KEY_JSON", service_account),
+            ("TARGET_GOOGLE_SHEET_ID", spreadsheet_id),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValidationError(
+            "Missing required Google Sheets configuration: "
+            + ", ".join(missing)
+            + ". Pass --service-account/--spreadsheet or set the variables."
+        )
+    return service_account, spreadsheet_id
 
 
 def _write_both(rows: list[dict[str, Any]], out_dir: Path, stem: str) -> list[Path]:
@@ -317,6 +359,57 @@ async def _export_channel_messages(out_dir: Path, *, team_id: str, channel_id: s
     return paths
 
 
+async def _sync_users(
+    *,
+    service_account: str | None,
+    spreadsheet_id: str | None,
+    worksheet: str,
+    dry_run: bool,
+    top: int | None,
+) -> None:
+    """Fetch users from Graph and replace a Google Sheets worksheet.
+
+    The Sheets exporter is built only after a successful fetch and
+    only for a real sync: a dry run needs no Google credentials at
+    all, fixing the old CLI, which authenticated to Sheets before
+    honouring ``--dry-run``.
+    """
+    client = _make_users_client()
+    users = await client.get_users(top=top)
+    if dry_run:
+        print(f"Dry-run: fetched {len(users)} users; skipping Google Sheets write")
+        return
+    assert service_account is not None and spreadsheet_id is not None  # noqa: S101
+    exporter = _make_sheets_exporter(service_account, spreadsheet_id)
+    title = sanitize_worksheet_title(worksheet)
+    written = exporter.write_rows(users, title, fieldnames=list(USER_FIELDS))
+    print(f"Synced {written} users to worksheet {title!r}")
+
+
+async def _sync_mail(
+    *,
+    user_id: str,
+    service_account: str | None,
+    spreadsheet_id: str | None,
+    worksheet: str | None,
+    dry_run: bool,
+    top: int | None,
+) -> None:
+    """Fetch one user's messages and replace a Google Sheets worksheet."""
+    client = _make_mail_client()
+    messages = await client.get_user_messages(user_id, top=top)
+    if dry_run:
+        print(
+            f"Dry-run: fetched {len(messages)} messages for {user_id}; skipping Google Sheets write"
+        )
+        return
+    assert service_account is not None and spreadsheet_id is not None  # noqa: S101
+    exporter = _make_sheets_exporter(service_account, spreadsheet_id)
+    title = sanitize_worksheet_title(worksheet or f"mail-{user_id}")
+    written = exporter.write_rows(messages, title, fieldnames=_MAIL_EXPORT_FIELDS)
+    print(f"Synced {written} messages for {user_id} to worksheet {title!r}")
+
+
 def _run_stig_preview(directory: Path, out_dir: Path | None) -> list[Path]:
     """Plan SharePoint lists for local STIG CSVs. No credentials, no writes to a tenant."""
     plans = plan_lists_from_directory(directory)
@@ -431,6 +524,47 @@ def build_parser() -> argparse.ArgumentParser:
     channel_parser.add_argument("--team", required=True, help="Team id.")
     channel_parser.add_argument("--channel", required=True, help="Channel id.")
 
+    sync = subparsers.add_parser(
+        "sync",
+        help="Sync data to Google Sheets (replaces worksheet content).",
+    )
+    sync_sub = sync.add_subparsers(dest="sync_target", required=True)
+    sync_users = sync_sub.add_parser("users", help="Sync all users to a worksheet.")
+    sync_users.add_argument(
+        "--spreadsheet",
+        default=None,
+        help="Spreadsheet id (default: $TARGET_GOOGLE_SHEET_ID).",
+    )
+    sync_users.add_argument(
+        "--service-account",
+        default=None,
+        help="Service-account key: JSON string or path to a key file "
+        "(default: $GCS_SERVICE_ACCOUNT_KEY_JSON).",
+    )
+    sync_users.add_argument("--worksheet", default="users", help="Worksheet title.")
+    sync_users.add_argument("--dry-run", action="store_true", help="Fetch but do not write.")
+    sync_users.add_argument("--top", type=int, default=None, help="Page size (not a total cap).")
+    sync_mail = sync_sub.add_parser("mail", help="Sync one user's Outlook messages to a worksheet.")
+    sync_mail.add_argument(
+        "--spreadsheet",
+        default=None,
+        help="Spreadsheet id (default: $TARGET_GOOGLE_SHEET_ID).",
+    )
+    sync_mail.add_argument(
+        "--service-account",
+        default=None,
+        help="Service-account key: JSON string or path to a key file "
+        "(default: $GCS_SERVICE_ACCOUNT_KEY_JSON).",
+    )
+    sync_mail.add_argument("--user", required=True, help="User id or UPN.")
+    sync_mail.add_argument(
+        "--worksheet",
+        default=None,
+        help="Worksheet title (default: mail-<user>).",
+    )
+    sync_mail.add_argument("--dry-run", action="store_true", help="Fetch but do not write.")
+    sync_mail.add_argument("--top", type=int, default=None, help="Page size (not a total cap).")
+
     logs = subparsers.add_parser("logs", help="Export audit logs.")
     logs_sub = logs.add_subparsers(dest="logs_target", required=True)
     sign_ins = logs_sub.add_parser("sign-ins", help="Export sign-in logs.")
@@ -475,6 +609,31 @@ async def _dispatch(args: argparse.Namespace) -> None:
             await _export_mail(args.out, user_id=args.user)
         elif args.export_target == "channel-messages":
             await _export_channel_messages(args.out, team_id=args.team, channel_id=args.channel)
+    elif args.command == "sync":
+        # Resolve Sheets config before any Graph fetch for a real
+        # sync, so a misconfigured run fails fast. A dry run needs
+        # no Sheets config at all.
+        if args.dry_run:
+            service_account, spreadsheet_id = None, None
+        else:
+            service_account, spreadsheet_id = _resolve_sheets_config(args)
+        if args.sync_target == "users":
+            await _sync_users(
+                service_account=service_account,
+                spreadsheet_id=spreadsheet_id,
+                worksheet=args.worksheet,
+                dry_run=args.dry_run,
+                top=args.top,
+            )
+        elif args.sync_target == "mail":
+            await _sync_mail(
+                user_id=args.user,
+                service_account=service_account,
+                spreadsheet_id=spreadsheet_id,
+                worksheet=args.worksheet,
+                dry_run=args.dry_run,
+                top=args.top,
+            )
     elif args.command == "logs" and args.logs_target == "sign-ins":
         await _export_sign_in_logs(args.out, days=args.days, user_id=args.user)
     elif args.command == "stig" and args.stig_target == "preview":

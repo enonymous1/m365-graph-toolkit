@@ -2,9 +2,9 @@
 
 Export and analyse Microsoft 365 data — users, groups and teams, SharePoint sites and lists, OneDrive usage, Planner plans and tasks, calendars, mail, Teams channel messages, and audit logs — through the Microsoft Graph API, from one installable Python package and CLI. It can also plan and import DISA STIG CSV exports as SharePoint lists (library only).
 
-This is a rewrite of a July 2026 codebase that did not run: its clients imported a module that never existed, its pagination and raw-HTTP helpers were never defined, and its exporters mixed SDK objects with dicts. Version 2.0.0 keeps the scope and fixes the plumbing. Version 2.1.0 folds in the Planner, calendar, mail, Teams-messages, and STIG-import code from a second, February/May 2026 codebase (`mp-m365-app`) on the same plumbing — no hardcoded paths, no bundled STIG data. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+This is a rewrite of a July 2026 codebase that did not run: its clients imported a module that never existed, its pagination and raw-HTTP helpers were never defined, and its exporters mixed SDK objects with dicts. Version 2.0.0 keeps the scope and fixes the plumbing. Version 2.1.0 folds in the Planner, calendar, mail, Teams-messages, and STIG-import code from a second, February/May 2026 codebase (`mp-m365-app`) on the same plumbing — no hardcoded paths, no bundled STIG data. Version 2.2.0 folds in the Google Sheets sync from a third codebase (`mp-m365-py`, `m365-google-sheets-sync`): only its Sheets sink was carried over, onto the existing users/mail clients — its hand-rolled Graph client was not. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
-> **No live tenant run yet.** The SDK builder chains were checked against the installed `msgraph-sdk` source and every offline behaviour is tested, but auth, pagination, `$search`, photo content, and upload/download against a real tenant still need a maintainer run. The 2.1.0 additions (Planner, calendar, mail, channel messages, STIG import) are likewise untested against a live tenant. See [Live check](#live-check).
+> **No live tenant run yet.** The SDK builder chains were checked against the installed `msgraph-sdk` source and every offline behaviour is tested, but auth, pagination, `$search`, photo content, and upload/download against a real tenant still need a maintainer run. The 2.1.0 additions (Planner, calendar, mail, channel messages, STIG import) are likewise untested against a live tenant, as is the 2.2.0 Google Sheets sync (its `gspread` call shapes were checked against the installed package instead). See [Live check](#live-check).
 
 ## Install
 
@@ -12,7 +12,7 @@ This is a rewrite of a July 2026 codebase that did not run: its clients imported
 pip install -e ".[graph]"
 ```
 
-The base install (no `[graph]`) is enough for the offline `demo` command, the exporters, and the analysers. Live commands need the Graph dependencies (`azure-identity`, `msgraph-sdk`).
+The base install (no `[graph]`) is enough for the offline `demo` command, the exporters, and the analysers. Live commands need the Graph dependencies (`azure-identity`, `msgraph-sdk`). Google Sheets sync needs the `[sheets]` extra as well: `pip install -e ".[graph,sheets]"`.
 
 Python 3.10+.
 
@@ -26,6 +26,8 @@ cp .env.example .env
 ```
 
 Or export the three variables directly. The CLI loads a `.env` file from the working directory when `python-dotenv` is installed. Nothing in this project logs or prints a secret or a token value.
+
+For Google Sheets sync only, also set `GCS_SERVICE_ACCOUNT_KEY_JSON` (the service-account JSON key, either as a JSON string or a path to the key file) and `TARGET_GOOGLE_SHEET_ID`, or pass `--service-account` / `--spreadsheet` on the command line. Grant the service account **Editor** access to the target spreadsheet. The Sheets writer uses the `spreadsheets` scope and **clears the target worksheet before writing** — a sync replaces that worksheet's contents.
 
 Check the credentials work (prints only the token expiry):
 
@@ -68,7 +70,15 @@ m365-toolkit export mail --out ./exports --user <user-id-or-upn>
 
 # One Teams channel's messages
 m365-toolkit export channel-messages --out ./exports --team <team-id> --channel <channel-id>
+
+# Sync users / one user's mail into Google Sheets (replaces the worksheet)
+m365-toolkit sync users --dry-run
+m365-toolkit sync users --spreadsheet <sheet-id> --worksheet users
+m365-toolkit sync mail --user <user-id-or-upn> --dry-run
+m365-toolkit sync mail --user <user-id-or-upn> --spreadsheet <sheet-id>
 ```
+
+A dry run fetches from Graph and reports the row count without touching Google Sheets — it needs no Sheets credentials. A real sync builds the Sheets exporter only after the fetch succeeds, and missing Sheets configuration exits non-zero before any fetch. Do not schedule a sync on push: if you automate it, use a `workflow_dispatch`-only workflow (manual or scheduled trigger, never `push`), with the five secrets above stored as repository secrets, and point the first runs at a test spreadsheet.
 
 ## STIG imports (preview is read-only; import is library-only)
 
@@ -143,6 +153,8 @@ m365-toolkit logs sign-ins --out ./exports --days 7
 Confirm: users paginate past the first page, `find_user` returns a match, a team-members export has no double `/groups/groups/` URL errors, and a photo/download round trip works. Report anything that fails with the command and the (redacted) error.
 
 For the 2.1.0 additions, also confirm: a Planner export returns plans with bucket names and checklist counts, a calendar/mail export for one user pages past the first page, a channel-messages export returns sender names, and a STIG preview against one real CSV plans the expected columns before any import is attempted. Do not run the STIG import against a production site first — use a test site.
+
+For the 2.2.0 Sheets sync, also confirm: `m365-toolkit sync users --dry-run` succeeds with only the Graph variables set, a real sync to a **test** spreadsheet creates the `users` worksheet with a header row and the fetched users, a second sync replaces (not appends) its contents, and `sync mail` writes more than 25 messages for a mailbox that has them (pagination past the old first-page cap).
 
 ## Development
 
