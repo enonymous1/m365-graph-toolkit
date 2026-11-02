@@ -32,13 +32,14 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from . import __version__
 from .analysis import analyze_onedrive_usage, analyze_sign_in_logs, analyze_team_membership
 from .auth import AuthManager
 from .clients import (
     AuditLogsClient,
+    BaseClient,
     CalendarClient,
     GroupsClient,
     MailClient,
@@ -141,40 +142,53 @@ def _load_dotenv() -> None:
     load_dotenv()
 
 
+_ClientT = TypeVar("_ClientT", bound=BaseClient)
+
+
+def _make_client(client_cls: type[_ClientT]) -> _ClientT:
+    """Build one live client from the environment (single AuthManager path).
+
+    The nine ``_make_*_client`` wrappers below exist so tests can
+    monkeypatch one client type at a time; they are one-liners over
+    this helper instead of nine copies of the same construction.
+    """
+    return client_cls.from_auth(AuthManager())
+
+
 def _make_users_client() -> UsersClient:
-    return UsersClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(UsersClient)
 
 
 def _make_groups_client() -> GroupsClient:
-    return GroupsClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(GroupsClient)
 
 
 def _make_sharepoint_client() -> SharePointClient:
-    return SharePointClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(SharePointClient)
 
 
 def _make_onedrive_client() -> OneDriveClient:
-    return OneDriveClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(OneDriveClient)
 
 
 def _make_audit_client() -> AuditLogsClient:
-    return AuditLogsClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(AuditLogsClient)
 
 
 def _make_planner_client() -> PlannerClient:
-    return PlannerClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(PlannerClient)
 
 
 def _make_calendar_client() -> CalendarClient:
-    return CalendarClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(CalendarClient)
 
 
 def _make_mail_client() -> MailClient:
-    return MailClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(MailClient)
 
 
 def _make_teams_messages_client() -> TeamsMessagesClient:
-    return TeamsMessagesClient.from_auth(AuthManager())  # type: ignore[return-value]
+    return _make_client(TeamsMessagesClient)
 
 
 def _make_sheets_exporter(
@@ -379,7 +393,10 @@ async def _sync_users(
     if dry_run:
         print(f"Dry-run: fetched {len(users)} users; skipping Google Sheets write")
         return
-    assert service_account is not None and spreadsheet_id is not None  # noqa: S101
+    if service_account is None or spreadsheet_id is None:
+        # An assert would vanish under ``python -O`` and surface as a
+        # confusing TypeError inside the exporter; fail explicitly.
+        raise ValidationError("Google Sheets configuration is required for a real sync")
     exporter = _make_sheets_exporter(service_account, spreadsheet_id)
     title = sanitize_worksheet_title(worksheet)
     written = exporter.write_rows(users, title, fieldnames=list(USER_FIELDS))
@@ -403,7 +420,10 @@ async def _sync_mail(
             f"Dry-run: fetched {len(messages)} messages for {user_id}; skipping Google Sheets write"
         )
         return
-    assert service_account is not None and spreadsheet_id is not None  # noqa: S101
+    if service_account is None or spreadsheet_id is None:
+        # An assert would vanish under ``python -O`` and surface as a
+        # confusing TypeError inside the exporter; fail explicitly.
+        raise ValidationError("Google Sheets configuration is required for a real sync")
     exporter = _make_sheets_exporter(service_account, spreadsheet_id)
     title = sanitize_worksheet_title(worksheet or f"mail-{user_id}")
     written = exporter.write_rows(messages, title, fieldnames=_MAIL_EXPORT_FIELDS)
@@ -487,6 +507,7 @@ def _check_auth() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for every subcommand (export/sync/logs/demo/stig)."""
     parser = argparse.ArgumentParser(
         prog="m365-toolkit",
         description="Export and analyse Microsoft 365 data via the Graph API.",
@@ -652,6 +673,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         asyncio.run(_dispatch(args))
     except M365Error as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        # File writes (demo/export output) are the one non-library
+        # failure path; a traceback here would hide the path that
+        # failed behind a stack trace, so report it like any error.
         print(f"Error: {error}", file=sys.stderr)
         return 1
     return 0

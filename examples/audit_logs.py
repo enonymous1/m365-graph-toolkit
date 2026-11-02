@@ -20,7 +20,8 @@ from m365_graph_toolkit.clients import AuditLogsClient
 
 
 async def main(days: int) -> None:
-    client = AuditLogsClient.from_auth(AuthManager())  # type: ignore[arg-type]
+    """Export sign-in logs for the last ``days`` days and print the summary."""
+    client = AuditLogsClient.from_auth(AuthManager())
     logs = await client.get_audit_logs(log_type="signIn", days=days)
     print(json.dumps(analyze_sign_in_logs(logs), indent=2, default=str))
 

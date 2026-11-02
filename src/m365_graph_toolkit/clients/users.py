@@ -228,14 +228,25 @@ class UsersClient(BaseClient):
         return [row for batch in results for row in batch]
 
     async def get_direct_reports(self, user_id: str) -> list[dict[str, Any]]:
-        """Return a user's direct reports (first page only if unpaged by the SDK)."""
+        """Return a user's direct reports, following pagination.
+
+        Every other list method in this package pages; this one
+        previously returned only the SDK's first page, silently
+        truncating large reports. The ``with_url`` shape was checked
+        against the installed ``msgraph-sdk`` builder (it exists on
+        the direct-reports builder, as on every other collection
+        builder used here).
+        """
         user_id = require_non_empty(user_id, name="user_id")
-        response = await self._run(
-            lambda: self.client.users.by_user_id(user_id).direct_reports.get(),
-            operation_name="get_direct_reports",
-        )
-        values = getattr(response, "value", None) or []
-        return [_normalise_user(report) for report in values]
+
+        async def first_page() -> Any:
+            return await self.client.users.by_user_id(user_id).direct_reports.get()
+
+        async def next_page(url: str) -> Any:
+            return await self.client.users.by_user_id(user_id).direct_reports.with_url(url).get()
+
+        reports = await self._collect(first_page, next_page, operation_name="get_direct_reports")
+        return [_normalise_user(report) for report in reports]
 
     async def get_manager(self, user_id: str) -> dict[str, Any] | None:
         """Return a user's manager, or None if the user has none."""
@@ -276,12 +287,18 @@ class UsersClient(BaseClient):
         return bytes(content)
 
     def _build_user_model(self, data: dict[str, Any]) -> Any:
-        """Build an SDK User model from snake_case fields (live path)."""
-        from msgraph.generated.models.user import User
+        """Build an SDK User model from snake_case fields (live path).
 
+        Validation runs before the SDK import, so an unknown field
+        raises ``ValidationError`` even when ``msgraph-sdk`` is not
+        installed (base install), instead of a misleading
+        ``ModuleNotFoundError``.
+        """
         unknown = sorted(set(data) - _UPDATEABLE_FIELDS - {"password_profile"})
         if unknown:
             raise ValidationError(f"Unknown user field(s): {', '.join(unknown)}")
+        from msgraph.generated.models.user import User
+
         return User(**{key: value for key, value in data.items() if value is not None})
 
     async def update_user(self, user_id: str, data: dict[str, Any]) -> dict[str, Any]:

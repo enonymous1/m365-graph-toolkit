@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "m365-graph-toolkit"
-version = "2.2.0"
+version = "2.3.0"
 description = "Export and analyse Microsoft 365 data via the Microsoft Graph API: users, groups, SharePoint, OneDrive, Planner, calendars, mail, Teams messages, audit logs, and STIG list imports, with an optional Google Sheets sync."
 readme = "README.md"
 license = "MIT"
@@ -77,3 +77,6 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "graph: needs msgraph-sdk (the [graph] extra) to build real SDK models",
+]

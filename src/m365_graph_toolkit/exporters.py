@@ -43,7 +43,14 @@ def timestamped_path(out_dir: str | Path, stem: str, extension: str) -> Path:
     return directory / f"{safe_stem}_{timestamp}.{extension.lstrip('.')}"
 
 
-def _csv_value(value: Any) -> Any:
+def render_cell_value(value: Any) -> Any:
+    """Render one row value for a flat export (CSV cell or Sheets cell).
+
+    Shared by :func:`write_csv` and the Sheets exporter so the two
+    sinks can never drift apart on what a value becomes: ``None``
+    becomes ``""``, datetimes become ISO strings, lists/dicts become
+    JSON strings, and everything else keeps its type.
+    """
     if value is None:
         return ""
     if isinstance(value, datetime):
@@ -94,7 +101,7 @@ def write_csv(
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="raise")
             writer.writeheader()
             for row in row_list:
-                writer.writerow({key: _csv_value(row.get(key)) for key in fieldnames})
+                writer.writerow({key: render_cell_value(row.get(key)) for key in fieldnames})
     except (OSError, csv.Error) as exc:
         raise ExportError(f"Failed to write CSV to {path}: {exc}") from exc
     return path
@@ -126,4 +133,4 @@ def write_json(data: Any, out_dir: str | Path, stem: str) -> Path:
     return path
 
 
-__all__ = ["field_names_for", "timestamped_path", "write_csv", "write_json"]
+__all__ = ["field_names_for", "render_cell_value", "timestamped_path", "write_csv", "write_json"]

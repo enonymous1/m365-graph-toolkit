@@ -8,7 +8,18 @@ from pathlib import Path
 import pytest
 
 from m365_graph_toolkit.errors import ExportError, ValidationError
-from m365_graph_toolkit.exporters import write_csv, write_json
+from m365_graph_toolkit.exporters import render_cell_value, write_csv, write_json
+
+
+def test_render_cell_value_is_the_shared_sink_conversion() -> None:
+    # CSV and Sheets must render a value the same way; this is the
+    # one function both sinks use, so a drift here fails loudly.
+    stamp = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
+    assert render_cell_value(None) == ""
+    assert render_cell_value(stamp) == "2026-10-20T09:00:00+00:00"
+    assert render_cell_value({"a": 1}) == '{"a": 1}'
+    assert render_cell_value(42) == 42
+    assert render_cell_value(True) is True
 
 
 def test_write_csv_does_not_mutate_input(tmp_path: Path) -> None:

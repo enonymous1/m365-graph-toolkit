@@ -88,6 +88,22 @@ async def test_get_user_memberships_keeps_groups_only() -> None:
     assert client.groups.by_group_id.call_count == 0
 
 
+async def test_get_direct_reports_pages() -> None:
+    client = MagicMock()
+    builder = client.users.by_user_id.return_value
+    builder.direct_reports.get = AsyncMock(
+        return_value=page([user_obj()], next_link="https://example.com/p2")
+    )
+    builder.direct_reports.with_url.return_value.get = AsyncMock(
+        return_value=page([user_obj(id="2")])
+    )
+    reports = await UsersClient(client).get_direct_reports("u1")
+    assert [report["id"] for report in reports] == [
+        "11111111-1111-1111-1111-111111111111",
+        "2",
+    ]
+
+
 async def test_get_user_memberships_pages() -> None:
     client = MagicMock()
     builder = client.users.by_user_id.return_value

@@ -3,6 +3,64 @@
 All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] — 2026-11-02
+
+Staff-level review of the 2.2.0 tree. All changes below are
+test-gated; the review itself is in the staff-review package
+delivered alongside this release.
+
+### Fixed
+
+- `UsersClient.get_direct_reports` returned only the SDK's first
+  page while every other list method paged. It now pages through
+  `odata_next_link` like the rest; the `with_url` shape was checked
+  against the installed `msgraph-sdk` builder.
+- A sync into a pre-existing worksheet smaller than the data could
+  fail on the Sheets update. The exporter now grows an existing
+  worksheet's grid (rows/columns) before clearing and writing; it
+  never shrinks one.
+- Model builders imported the SDK before validating their input, so
+  a bad plan on a base install (no `msgraph-sdk`) raised
+  `ModuleNotFoundError` instead of `ValidationError`. Validation
+  now runs first in `UsersClient._build_user_model`,
+  `SharePointClient._build_list_model`, and
+  `SharePointClient._build_list_item`.
+- The sync commands guarded missing Sheets configuration with
+  `assert`, which vanishes under `python -O` and would have
+  surfaced as a confusing `TypeError` inside the exporter. They now
+  raise `ValidationError` explicitly.
+- `main()` caught only `M365Error`, so a failed output-file write
+  (demo/export) produced a traceback. `OSError` is now reported
+  like any other error, with exit code 1.
+
+### Changed
+
+- The nine `_make_*_client` CLI factories are one-liners over a
+  single generic `_make_client` helper; `BaseClient.from_auth` is
+  now generic (`TypeVar`), which removed all nine
+  `# type: ignore[return-value]` comments in the CLI and the
+  equivalent ignores in the examples.
+- CSV and Sheets cell rendering is now one shared function,
+  `exporters.render_cell_value`, instead of two near-identical
+  private copies that could drift apart.
+- README rewritten with Description, Prerequisites, Installation,
+  Local Development, and Deployment sections, an embedded Mermaid
+  architecture diagram (`docs/architecture.mmd`), and a
+  screenshot/GIF capture plan (`docs/visual-assets.md`) that uses
+  fictional demo data only — no screenshots are shipped yet, and no
+  broken image links were added for them.
+- CI now tests Python 3.10 (previously claimed but untested) and
+  adds a base-install job that installs no extras, runs `demo`,
+  and runs the test suite minus `test_sdk_shapes.py` and tests
+  marked `@pytest.mark.graph` (those that build real SDK models).
+  The base job caught the model-builder validation-order bug above.
+
+### Not verified
+
+- No live tenant or live Sheets run. The direct-reports paging and
+  worksheet-resize fixes are fake-client tested and SDK-shape
+  checked, not live-tested. See README, "Live check".
+
 ## [2.2.0] — 2026-10-28
 
 Fold-in of the Google Sheets sink from the October 2025 / May 2026

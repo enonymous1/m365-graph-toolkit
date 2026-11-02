@@ -29,11 +29,12 @@ from m365_graph_toolkit.exporters import write_csv, write_json
 
 
 async def main(out_dir: Path, user_id: str) -> None:
+    """Export Planner plans/tasks, calendar events, and mail for one user."""
     auth = AuthManager()
-    groups = GroupsClient.from_auth(auth)  # type: ignore[arg-type]
-    planner = PlannerClient.from_auth(auth)  # type: ignore[arg-type]
-    calendar = CalendarClient.from_auth(auth)  # type: ignore[arg-type]
-    mail = MailClient.from_auth(auth)  # type: ignore[arg-type]
+    groups = GroupsClient.from_auth(auth)
+    planner = PlannerClient.from_auth(auth)
+    calendar = CalendarClient.from_auth(auth)
+    mail = MailClient.from_auth(auth)
 
     all_groups = await groups.get_groups()
     plans = await planner.get_all_plans(all_groups)

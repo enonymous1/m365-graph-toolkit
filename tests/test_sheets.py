@@ -48,6 +48,23 @@ class FakeWorksheet:
         self.clears = 0
         self.updates: list[tuple[list[list[Any]], str | None]] = []
         self.failures: list[BaseException] = []
+        self.resize_calls: list[tuple[int, int]] = []
+
+    @property
+    def row_count(self) -> int:
+        return self.rows
+
+    @property
+    def col_count(self) -> int:
+        return self.cols
+
+    def resize(self, rows: int | None = None, cols: int | None = None) -> dict[str, Any]:
+        if rows is not None:
+            self.rows = rows
+        if cols is not None:
+            self.cols = cols
+        self.resize_calls.append((self.rows, self.cols))
+        return {}
 
     def clear(self) -> None:
         self.data = []
@@ -136,6 +153,19 @@ def test_write_rows_reuses_existing_worksheet() -> None:
     exporter = make_exporter(client)
     assert exporter.write_rows([{"id": "1"}], "users") == 1
     assert len(client.spreadsheet.worksheets) == 1
+
+
+def test_write_rows_resizes_too_small_existing_worksheet() -> None:
+    # A sync into a worksheet created for fewer rows/columns used to
+    # fail on the Sheets update; the exporter must grow the grid.
+    client = FakeClient()
+    worksheet = client.spreadsheet.add_worksheet("users", rows=2, cols=1)
+    exporter = make_exporter(client)
+    rows = [{"id": str(i), "name": f"User {i}"} for i in range(3)]
+    assert exporter.write_rows(rows, "users") == 3
+    assert worksheet.resize_calls == [(4, 2)]
+    assert worksheet.rows == 4
+    assert worksheet.cols == 2
 
 
 def test_write_rows_empty_without_fieldnames_raises() -> None:
@@ -288,6 +318,38 @@ def test_sync_missing_sheets_config_returns_1(
     monkeypatch.delenv("GCS_SERVICE_ACCOUNT_KEY_JSON", raising=False)
     monkeypatch.delenv("TARGET_GOOGLE_SHEET_ID", raising=False)
     assert cli.main(["sync", "users"]) == 1
+
+
+def test_sync_users_without_config_raises_instead_of_asserting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The old code used ``assert`` for this guard, which vanishes
+    # under ``python -O``. A direct call with no config must raise a
+    # validation error, not crash later inside the exporter.
+    import asyncio
+
+    fake_client = MagicMock()
+    fake_client.get_users = AsyncMock(return_value=demo_users())
+    monkeypatch.setattr(cli, "_make_users_client", lambda: fake_client)
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            cli._sync_users(
+                service_account=None,
+                spreadsheet_id=None,
+                worksheet="users",
+                dry_run=False,
+                top=None,
+            )
+        )
+
+
+def test_main_returns_1_on_output_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_run_demo",
+        lambda out_dir: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    assert cli.main(["demo", "--out", str(tmp_path)]) == 1
 
 
 def test_sync_mail_default_worksheet_title_is_sanitised(

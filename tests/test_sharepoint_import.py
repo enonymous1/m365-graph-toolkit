@@ -114,6 +114,7 @@ async def test_get_list_columns_normalises(monkeypatch: pytest.MonkeyPatch) -> N
     assert columns[1]["allow_multiple_lines"] is True
 
 
+@pytest.mark.graph
 async def test_import_list_from_csv_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _, sp = await _import_client(monkeypatch, columns=_PROVISIONED_COLUMNS)
     plan, rows = load_stig_csv(SAMPLE_CSV)
@@ -128,6 +129,7 @@ async def test_import_list_from_csv_success(monkeypatch: pytest.MonkeyPatch) -> 
     assert first_call_fields.fields.additional_data["Title"] == "V-999001"
 
 
+@pytest.mark.graph
 async def test_import_list_counts_failed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     _, sp = await _import_client(
         monkeypatch,

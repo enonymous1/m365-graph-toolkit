@@ -20,7 +20,8 @@ from m365_graph_toolkit.exporters import write_csv, write_json
 
 
 async def main(out_dir: Path) -> None:
-    client = UsersClient.from_auth(AuthManager())  # type: ignore[arg-type]
+    """Export all users and their group memberships to CSV + JSON."""
+    client = UsersClient.from_auth(AuthManager())
     users = await client.get_users()
     memberships = await client.get_user_memberships_batch(users)
     print(write_csv(users, out_dir, "users"))

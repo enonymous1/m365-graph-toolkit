@@ -19,9 +19,10 @@ from m365_graph_toolkit.clients import OneDriveClient, UsersClient
 
 
 async def main() -> None:
+    """Print OneDrive usage per user for the live tenant."""
     auth = AuthManager()
-    users = await UsersClient.from_auth(auth).get_users()  # type: ignore[arg-type]
-    drive = OneDriveClient.from_auth(auth)  # type: ignore[arg-type]
+    users = await UsersClient.from_auth(auth).get_users()
+    drive = OneDriveClient.from_auth(auth)
     stats = []
     for user in users:
         try:

@@ -40,9 +40,10 @@ _MAIL_FIELDS = [
 
 
 async def main(user_id: str, *, dry_run: bool) -> None:
+    """Sync users and one user's mail to Google Sheets worksheets."""
     auth = AuthManager()
-    users_client = UsersClient.from_auth(auth)  # type: ignore[arg-type]
-    mail_client = MailClient.from_auth(auth)  # type: ignore[arg-type]
+    users_client = UsersClient.from_auth(auth)
+    mail_client = MailClient.from_auth(auth)
 
     users = await users_client.get_users()
     messages = await mail_client.get_user_messages(user_id)

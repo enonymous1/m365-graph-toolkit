@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # The package claims Python >=3.10, so 3.10 must be in the
+        # matrix; it was previously claimed but never tested.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,3 +28,27 @@ jobs:
         run: mypy src
       - name: Tests
         run: python -m pytest -q
+
+  base:
+    # The base install (no extras) is what the README promises for
+    # the offline demo command, but the test job above always
+    # installs [dev] (graph + sheets), so a base-install breakage
+    # was invisible. This job installs nothing extra and runs the
+    # demo plus every test that does not need an optional extra.
+    # test_sdk_shapes.py is excluded because it imports msgraph, and
+    # tests marked ``graph`` build real SDK models; the gspread shape
+    # test skips itself without gspread.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install base only
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio
+      - name: Demo without extras
+        run: m365-toolkit demo --out ./demo-output
+      - name: Tests without extras
+        run: python -m pytest -q --ignore=tests/test_sdk_shapes.py -m "not graph"

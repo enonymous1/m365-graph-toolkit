@@ -1,0 +1,22 @@
+flowchart TD
+    CLI["CLI: m365-toolkit<br/>(export / sync / logs / demo / stig / check-auth)"]
+    AUTH["AuthManager<br/>(client secret from env / .env)"]
+    GSC["GraphServiceClient<br/>(msgraph-sdk, lazy builder imports)"]
+    CLIENTS["Service clients<br/>Users, Groups, SharePoint, OneDrive,<br/>Planner, Calendar, Mail, Teams, AuditLogs"]
+    BASE["BaseClient<br/>pagination + retry + error translation"]
+    NORM["normalize<br/>SDK models / dicts -> plain dict rows"]
+    EXP["Exporters<br/>CSV + JSON, timestamped files"]
+    ANA["Analysers<br/>pure functions over rows"]
+    SHEETS["SheetsExporter<br/>(gspread, service account)"]
+    STIG["STIG planner<br/>(pure CSV -> list plans)"]
+
+    CLI --> AUTH
+    AUTH --> GSC
+    GSC --> CLIENTS
+    CLIENTS --> BASE
+    BASE --> NORM
+    NORM --> EXP
+    NORM --> ANA
+    NORM --> SHEETS
+    STIG --> CLIENTS
+    CLI --> STIG

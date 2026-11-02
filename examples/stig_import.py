@@ -33,6 +33,7 @@ from m365_graph_toolkit.stig import plan_lists_from_directory
 
 
 async def main(site_id: str, directory: Path) -> None:
+    """Preview STIG lists, confirm with a typed YES, then import them."""
     plans = plan_lists_from_directory(directory)
     print(f"Planning {len(plans)} lists from {directory}:")
     for plan in plans:
@@ -41,7 +42,7 @@ async def main(site_id: str, directory: Path) -> None:
     if answer != "YES":
         print("Aborted; nothing was written.")
         return
-    client = SharePointClient.from_auth(AuthManager())  # type: ignore[arg-type]
+    client = SharePointClient.from_auth(AuthManager())
     summaries = await client.import_lists_from_directory(site_id, directory)
     print(json.dumps(summaries, indent=2, default=str))
     failed = [s for s in summaries if s.get("error") or s["items_failed"]]

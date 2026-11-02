@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, TypeVar
 
 from ..auth import AuthManager
 from ..errors import GraphError, NotFoundError
 from ..retry import collect_pages, with_retry
+
+_ClientT = TypeVar("_ClientT", bound="BaseClient")
 
 
 class BaseClient:
@@ -35,8 +37,16 @@ class BaseClient:
         self.logger = logging.getLogger(self.__class__.__name__)
 
     @classmethod
-    def from_auth(cls, auth: AuthManager, **kwargs: Any) -> BaseClient:
-        """Build a client from an :class:`AuthManager` (live path only)."""
+    def from_auth(cls: type[_ClientT], auth: AuthManager, **kwargs: Any) -> _ClientT:
+        """Build a client from an :class:`AuthManager` (live path only).
+
+        The ``TypeVar`` return type is what lets callers write
+        ``UsersClient.from_auth(auth)`` and get a ``UsersClient`` from
+        the type checker, instead of a ``BaseClient`` that every call
+        site had to silence with ``# type: ignore``. It needs no
+        ``typing_extensions`` dependency: a bound ``TypeVar`` on a
+        classmethod works on Python 3.10.
+        """
         try:
             from msgraph import GraphServiceClient
         except ImportError as exc:  # pragma: no cover - dependency missing

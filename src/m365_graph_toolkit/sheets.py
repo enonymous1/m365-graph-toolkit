@@ -58,12 +58,11 @@ import random
 import re
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .errors import ExportError, ValidationError
-from .exporters import field_names_for
+from .exporters import field_names_for, render_cell_value
 from .normalize import require_non_empty
 from .retry import is_retryable
 
@@ -86,16 +85,6 @@ def sanitize_worksheet_title(title: str) -> str:
     if not cleaned:
         raise ValidationError("worksheet_title must contain at least one valid character")
     return cleaned
-
-
-def _sheet_value(value: Any) -> Any:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    return value
 
 
 def _load_service_account_info(value: str | Mapping[str, Any]) -> dict[str, Any]:
@@ -243,19 +232,40 @@ class SheetsExporter:
         self, spreadsheet: Any, title: str, *, total_rows: int, total_cols: int
     ) -> Any:
         try:
-            return self._run_with_retry(
+            worksheet = self._run_with_retry(
                 lambda: spreadsheet.worksheet(title),
                 operation_name="get worksheet",
             )
         except Exception as error:  # noqa: BLE001 - not-found is the create path
             if not _is_worksheet_not_found(error):
                 raise
-        rows = max(100, total_rows)
-        cols = max(10, total_cols)
-        return self._run_with_retry(
-            lambda: spreadsheet.add_worksheet(title=title, rows=rows, cols=cols),
-            operation_name="create worksheet",
-        )
+            rows = max(100, total_rows)
+            cols = max(10, total_cols)
+            return self._run_with_retry(
+                lambda: spreadsheet.add_worksheet(title=title, rows=rows, cols=cols),
+                operation_name="create worksheet",
+            )
+        # An existing worksheet keeps the grid it was created with. A
+        # sync into a smaller grid used to fail on the Sheets API
+        # update (or silently drop trailing rows, depending on the
+        # client), so grow it before clearing and writing. A worksheet
+        # is never shrunk: shrinking would delete data outside the
+        # sync's own columns.
+        existing_rows = getattr(worksheet, "row_count", None)
+        existing_cols = getattr(worksheet, "col_count", None)
+        if (
+            isinstance(existing_rows, int)
+            and isinstance(existing_cols, int)
+            and (existing_rows < total_rows or existing_cols < total_cols)
+        ):
+            self._run_with_retry(
+                lambda: worksheet.resize(
+                    rows=max(total_rows, existing_rows),
+                    cols=max(total_cols, existing_cols),
+                ),
+                operation_name="resize worksheet",
+            )
+        return worksheet
 
     def write_rows(
         self,
@@ -281,7 +291,7 @@ class SheetsExporter:
         if chunk_size < 1:
             raise ValidationError("chunk_size must be >= 1")
         values: list[list[Any]] = [list(fieldnames)]
-        values.extend([_sheet_value(row.get(key)) for key in fieldnames] for row in row_list)
+        values.extend([render_cell_value(row.get(key)) for key in fieldnames] for row in row_list)
         try:
             spreadsheet = self._get_spreadsheet()
             worksheet = self._get_or_create_worksheet(

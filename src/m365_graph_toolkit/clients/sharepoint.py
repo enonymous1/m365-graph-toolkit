@@ -199,12 +199,15 @@ class SharePointClient(BaseClient):
         )
 
     def _build_list_item(self, fields: dict[str, Any]) -> Any:
-        """Build an SDK ListItem carrying a FieldValueSet (live path)."""
+        """Build an SDK ListItem carrying a FieldValueSet (live path).
+
+        Validation runs before the SDK import (see ``_build_list_model``).
+        """
+        if not fields:
+            raise ValidationError("fields must not be empty")
         from msgraph.generated.models.field_value_set import FieldValueSet
         from msgraph.generated.models.list_item import ListItem
 
-        if not fields:
-            raise ValidationError("fields must not be empty")
         return ListItem(fields=FieldValueSet(additional_data=dict(fields)))
 
     async def create_list_item(
@@ -329,22 +332,39 @@ class SharePointClient(BaseClient):
         )
 
     def _build_list_model(self, display_name: str, columns: list[dict[str, Any]]) -> Any:
-        """Build an SDK list model with multi-line text columns (live path)."""
-        from msgraph.generated.models.column_definition import ColumnDefinition
-        from msgraph.generated.models.list_ import List_
-        from msgraph.generated.models.list_info import ListInfo
-        from msgraph.generated.models.text_column import TextColumn
+        """Build an SDK list model with multi-line text columns (live path).
 
-        seen: set[str] = set()
-        definitions = []
+        Validation runs before the SDK import, so a bad plan raises
+        ``ValidationError`` even when ``msgraph-sdk`` is not installed
+        (base install), instead of a misleading ``ModuleNotFoundError``.
+        """
+        # Validate first, import second (see docstring).
+        seen_names: set[str] = set()
         for column in columns:
             name = str(column.get("name", "")).strip()
             if not name:
                 raise ValidationError("List column names must not be empty")
             lowered = name.lower()
-            if lowered in seen:
+            if lowered in seen_names:
                 raise ValidationError(f"Duplicate list column name: {name!r}")
-            seen.add(lowered)
+            seen_names.add(lowered)
+
+        from msgraph.generated.models.column_definition import ColumnDefinition
+        from msgraph.generated.models.list_ import List_
+        from msgraph.generated.models.list_info import ListInfo
+        from msgraph.generated.models.text_column import TextColumn
+
+        definitions = []
+        for column in columns:
+            name = str(column.get("name", "")).strip()
+            definitions.append(
+                ColumnDefinition(
+                    name=name,
+                    text=TextColumn(
+                        allow_multiple_lines=bool(column.get("allow_multiple_lines", True))
+                    ),
+                )
+            )
             definitions.append(
                 ColumnDefinition(
                     name=name,
