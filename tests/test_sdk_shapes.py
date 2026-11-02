@@ -44,6 +44,7 @@ def test_user_builder_chains(graph_client) -> None:
     assert hasattr(users.transitive_member_of, "get")
     assert hasattr(users.transitive_member_of, "with_url")
     assert hasattr(users.direct_reports, "get")
+    assert hasattr(users.direct_reports, "with_url")
     assert hasattr(users.manager, "get")
     assert hasattr(users.photo.content, "get")
     assert hasattr(users.drive, "get")
